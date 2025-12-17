@@ -1,68 +1,116 @@
 # FocusLauncher
 
-Generate **“focus-or-launch”** shortcuts for Windows apps: press a hotkey and it will **bring the already-open app window to the front**; if it’s not running, it will **launch it**.
+A tiny Windows helper that behaves like **“focus-or-launch”**:
 
-This was built to solve a common PowerToys Keyboard Manager annoyance:
+- If an app window is already open, **bring it to the front**
+- Otherwise, **launch/activate** the app
 
-- You can bind a hotkey to “Run program”, but…
-- Microsoft Store apps and Chrome “installed web apps” (PWA-style) often **don’t have a normal `.exe` path**
-- And when they *do* launch, they often **open a new window every time** (especially web apps like YouTube) instead of focusing the existing one
+Works well for Microsoft Store apps and “installed web apps” (Chrome PWAs) that don’t have a normal `.exe` you can point PowerToys at.
 
-FocusLauncher generates the files you need so PowerToys hotkeys behave like a “real app shortcut”.
+## How it works
 
----
+On each run:
 
-## Why this exists (the original problem)
+1) If `--title` is provided, it searches visible top-level windows and focuses the first one whose title contains that substring (optionally filtered by `--process`).  
+2) If no matching window is found, it tries to activate the app by AUMID (AppID) using Windows’ activation manager.  
+3) If activation fails, it falls back to launching via: `explorer.exe shell:AppsFolder\<AUMID>`.
 
-The first goal was to create a PowerToys shortcut to launch a Store app (e.g., WhatsApp) without hunting for an executable path.
-
-That worked using the app’s **AppID/AUMID** (e.g., `shell:AppsFolder\...!App`), but PowerToys was unreliable with direct `shell:` launching and `.lnk` shortcuts.
-
-Then the “tricky one” showed up: **Chrome-installed YouTube**. Launching it always spawned a **new** window because it’s basically a Chrome app window, not a traditional single-instance desktop executable.
-
-The solution was:
-
-1. Identify apps by **AppUserModelID (AUMID)** (the same thing you get from `Get-StartApps`)
-2. Find an already-open window with that AUMID and **focus it**
-3. If no window exists, **launch** it using `explorer.exe shell:AppsFolder\<AUMID>`
-4. Wrap PowerShell in a tiny **VBScript** so PowerToys runs it reliably **without a flashing terminal**
-5. Cache the compiled helper code into a DLL so focusing is **fast** after the first run
-
----
-
-## What it generates
-
-For each app, FocusLauncher generates two files:
-
-- `*-focus-or-launch.ps1`  
-  Focuses the app window if it exists; otherwise launches it. Uses a cached `AumidFocus.dll` next to the script for speed.
-
-- `*-focus-or-launch.vbs`  
-  Launches the PS1 in a hidden window (no console flash). This is the file you point PowerToys at.
-
-> **Note:** The first time you run a generated launcher, it will create `AumidFocus.dll` beside the PS1. After that, it’s much faster.
-
----
-
-## Requirements
-
-- Windows 10/11
-- PowerShell 5.1+ (Windows PowerShell works great)
-- Apps must appear in `Get-StartApps` (most Store apps do; Chrome-installed apps usually do too)
-
----
-
-## Quick start
-
-### 1) Download / clone
-Clone the repo or download `New-FocusLauncher.ps1` into a folder, e.g.:
-
-`C:\Users\<you>\Documents\FocusLauncher\`
-
-### 2) Generate a launcher
-
-From PowerShell:
+## Usage
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\New-FocusLauncher.ps1 -AppName "WhatsApp"
+FocusLauncher.exe <AppID/AUMID> [--title "<substring>"] [--process "<processName>"]
+FocusLauncher.exe --list
+```
 
+Notes:
+- `<AppID/AUMID>` can be either:
+  - `Chrome._crx_...` / `Microsoft.Whatever...!App`
+  - OR `shell:AppsFolder\Chrome._crx_...` (the tool strips the prefix automatically)
+- `--process` expects the **process name without `.exe`** (example: `chrome`, not `chrome.exe`)
+
+### List windows (for debugging)
+```powershell
+FocusLauncher.exe --list
+```
+
+This prints:
+- Window title
+- Process name  
+…so you can pick a good `--title` substring and confirm the right `--process`.
+
+## Finding the AppID (AUMID)
+
+In PowerShell:
+
+### Microsoft Store app example (WhatsApp)
+```powershell
+Get-StartApps | Where-Object { $_.Name -like "*WhatsApp*" } | Select Name, AppID
+```
+
+### Chrome installed app / PWA example (YouTube)
+```powershell
+Get-StartApps | Where-Object { $_.Name -like "*YouTube*" } | Select Name, AppID
+```
+
+If you don’t know the exact name, broaden it:
+```powershell
+Get-StartApps | Where-Object { $_.Name -like "*chrome*" } | Select Name, AppID
+```
+
+The `AppID` value is what you pass as the first argument to `FocusLauncher.exe`.
+
+## Example: YouTube (Chrome installed app)
+
+Test from the repo folder:
+
+```powershell
+dotnet run -- "Chrome._crx_agimnkijcamfeangaknmldooml" --title "YouTube" --process "chrome"
+```
+
+What this does:
+- If a Chrome PWA window with “YouTube” in the title exists, it focuses it
+- Otherwise it activates/launches the app by AUMID
+
+## PowerToys setup (Keyboard Manager)
+
+1) PowerToys → **Keyboard Manager** → **Remap a shortcut**
+2) Action: **Run Program**
+3) Program:
+```text
+C:\dev\focuslauncher\FocusLauncher\bin\Release\net10.0-windows\win-x64\FocusLauncher.exe
+```
+4) Arguments:
+```text
+"Chrome._crx_agimnkijcamfeangaknmldooml" --title "YouTube" --process "chrome"
+```
+
+Tip: if focusing doesn’t work, run `FocusLauncher.exe --list` and tweak your `--title` substring to match what Windows shows.
+
+## Build / publish
+
+### Framework-dependent (smaller EXE, requires .NET runtime on the target machine)
+Use this if the machine already has the .NET Desktop Runtime installed:
+
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true
+```
+
+### Self-contained (no .NET install required on the target machine)
+Use this to run on a machine **without** .NET installed (bigger EXE):
+
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+```
+
+Output will be under something like:
+```text
+.\bin\Release\net10.0-windows\win-x64\publish\
+```
+
+## Troubleshooting
+
+- **It launches a new window instead of focusing**  
+  Use `--title` + `--process`, and verify the window title/process using `--list`.
+
+- **Focusing fails sometimes**  
+  Windows can block foreground focus in some cases; re-trying the hotkey usually works. Also avoid mixing admin/non-admin contexts (an elevated window can be harder to focus from a non-elevated process).
